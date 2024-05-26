@@ -96,35 +96,43 @@ struct partition_entry* partition_get_partition_entries()
 	return partition_entries;
 }
 
-void partition_split_boot(uint32_t block_size)
+void partition_split(char *new_part_name, unsigned long long new_part_size_octets, char *before_part_name, uint32_t block_size)
 {
-	struct partition_entry *boot;
-	int index = partition_get_index("boot");
-	unsigned long long lk_size = (1 * 1024 * 1024) / block_size;
+	if (INVALID_PTN != partition_get_index(new_part_name))
+	{
+	    dprintf(CRITICAL, "%s partition already exists!\n", new_part_name);
+	    return;
+	}
+
+	struct partition_entry *existing_part;
+	int index = partition_get_index(before_part_name);
+	unsigned long long new_part_size = new_part_size_octets / block_size;
 
 	if (index == INVALID_PTN) {
-		dprintf(CRITICAL, "Boot partition not found\n");
+		dprintf(CRITICAL, "%s partition not found\n", before_part_name);
 		return;
 	}
-	boot = &partition_entries[index];
+	existing_part = &partition_entries[index];
 
-	if (boot->size < lk_size) {
-		dprintf(CRITICAL, "Boot partition has not enough space for lk2nd\n");
+	if (existing_part->size < new_part_size) {
+		dprintf(CRITICAL, "%s partition has not enough space for %s\n", before_part_name, new_part_name);
 		return;
 	}
 
 	if (partition_count < NUM_PARTITIONS) {
-		struct partition_entry *lk = &partition_entries[partition_count++];
-		memcpy(lk, boot, sizeof(*lk));
-		strcpy(lk->name, "lk2nd");
-		lk->last_lba = lk->first_lba + lk_size - 1;
-		lk->size = lk_size;
+		/* Create a new partition entry, beginning where the existing partition was beginning */
+		struct partition_entry *new_part = &partition_entries[partition_count++];
+		memcpy(new_part, existing_part, sizeof(*new_part));
+		strcpy(new_part->name, new_part_name);
+		new_part->last_lba = new_part->first_lba + new_part_size - 1;
+		new_part->size = new_part_size;
 	} else {
-		dprintf(INFO, "Too many partitions to add virtual 'lk2nd' partition\n");
+		dprintf(INFO, "Too many partitions to add virtual '%s' partition\n", new_part_name);
 	}
 
-	boot->first_lba += lk_size;
-	boot->size -= lk_size;
+	/* Shift beginning of existing partition */
+	existing_part->first_lba += new_part_size;
+	existing_part->size -= new_part_size;
 }
 
 unsigned int partition_read_table()
@@ -160,7 +168,16 @@ unsigned int partition_read_table()
 	/* TODO: Move this to mmc_boot_read_gpt() */
 	partition_scan_for_multislot();
 
-	partition_split_boot(block_size);
+	partition_split("lk2nd", (1 * 1024 * 1024), "boot", block_size);
+	
+	if (INVALID_PTN == partition_get_index("recovery"))
+	{
+	    struct partition_info boot_part_info = partition_get_info("boot");
+	    unsigned long long recovery_part_size = boot_part_info.size/2; /* rough guessgitg  */
+	    
+	    dprintf(INFO, "No recovery partition found, inserting virtual recovery partition in boot partition.\n");
+	    partition_split("recovery", recovery_part_size, "boot", block_size);
+	}
 	return 0;
 }
 
